@@ -1,50 +1,102 @@
 import { RequestHandler } from "express"
 import UserModel from "../models/user"
+import * as CartController from "../controllers/carts"
+import createHttpError from "http-errors"
+import bcrypt from "bcrypt"
 
 
-export const getUsers: RequestHandler = async (req , res, next) => {
+export const getAuthenticatedUser: RequestHandler = async (req, res, next) => {
     try {
-        // throw Error("Error found !!!!")
-        const users = await UserModel.find().exec()
-        res.status(200).json(users)
+        const user = await UserModel.findById(req.session.userId).select("+email").exec()
+        res.status(201).json(user)
     } catch (error) {
         next(error)
     }
 }
 
-export const createUser : RequestHandler = async (req,res,next) => {
-    const birth_date = req.body.birth_date
-    const first_name = req.body.first_name
-    const last_name = req.body.last_name
-    const gender = req.body.gender
-    const email = req.body.email
-    const account_creation = req.body.account_creation
-    const password = req.body.password
+interface SignUpBody {
+    username?: string
+    email?: string,
+    password?: string,
+    userId: string
+}
 
-    try{
+export const signIn: RequestHandler<unknown, unknown, SignUpBody, unknown> = async (req, res, next) => {
+    const email = req.body.email
+    const username = req.body.username
+    const passwordRaw = req.body.password
+
+    try {
+
+        if (!username || !email || !passwordRaw) {
+            throw createHttpError(409, "Parameters missing")
+        }
+
+        const existingUsername = await UserModel.findOne({ username: username }).exec()
+
+        if (existingUsername) {
+            throw createHttpError(409, "This username already exist. Please choose another username or log in instead.")
+        }
+        const existingEmail = await UserModel.findOne({ email: email }).exec()
+
+        if (existingEmail) {
+            throw createHttpError(409, "This email already exist. Please choose another email or log in instead.")
+        }
+
+        const passwordHashed = await bcrypt.hash(passwordRaw, 10)
+
         const newUser = await UserModel.create({
-            birth_date : birth_date,
-            first_name : first_name,
-            last_name : last_name,
-            gender : gender,
-            email : email,
-            password : password,
-            account_creation : account_creation,
+            username: username,
+            email: email,
+            password: passwordHashed,
         })
-        
-        res.status(201).json(newUser)
-    }catch(error){
+        req.session.userId = newUser._id
+
+        await CartController.createCart(req, res, next)
+        res.status(201).json({ newUser })
+    } catch (error) {
         next(error)
     }
 }
 
-export const getUser : RequestHandler = async (req,res,next) => {
-    const userId = req.params.userId
+interface LogInBody {
+    username?: string,
+    password?: string
+}
 
-    try{
-        const users = await UserModel.findById(userId).exec()
-        res.status(200).json(users)
-    }catch(error){
+export const login: RequestHandler<unknown, unknown, LogInBody, unknown> = async (req, res, next) => {
+
+    const username = req.body.username
+    const password = req.body.password
+
+    try {
+        if (!username || !password) {
+            throw createHttpError(400, "Parameter(s) missing")
+        }
+        const user = await UserModel.findOne({ username: username }).select("+ password +email").exec()
+        if (!user) {
+            throw createHttpError(400, "Invalid credentials")
+        }
+
+        const passworMatched = await bcrypt.compare(password, user.password)
+        if (!passworMatched) {
+            throw createHttpError(401, "Invalid credentials")
+        }
+
+        req.session.userId = user._id
+        res.status(201).json(user)
+    } catch (error) {
         next(error)
     }
+
+}
+
+export const logout: RequestHandler = async (req, res, next) => {
+    req.session.destroy(error => {
+        if (error) {
+            next(error)
+        } else {
+            res.sendStatus(200)
+        }
+    })
 }
